@@ -1,0 +1,258 @@
+#!/usr/bin/env python
+
+### IMPORT MODULES ###
+import rospy
+import numpy as np
+from gamepad.gamepad_dictionaries import *
+
+### IMPORT ROS MESSAGE TYPES ###
+from sensor_msgs.msg import Joy
+from gamepad.msg import Gamepad
+
+
+
+### FUNCTIONS ###
+def ValidGamepadTypes():
+    return ['logitech_f710_wireless']
+
+def ValidGamepadType(gamepad_type):
+    return gamepad_type in ValidGamepadTypes()
+
+
+### CLASS ###
+class GamepadNode():
+
+    # INITIALISATION
+    def __init__(self):
+        rospy.init_node('gamepad_node')
+
+        # Class Variables
+        # self.time_difference = 0
+        self.previous_joy_message = Joy()
+        # self.gamepad_triggers_previously_nonzero = [False, False]
+
+        # ROS Parameters
+        self.GAMEPAD_TYPE = rospy.get_param('~gamepad_type', 'logitech_f710_wireless')
+        self.REPEAT_RATE = rospy.get_param('~repeat_rate', 10)
+        # self.SAFETY_TIMER = rospy.get_param('~safety_timer', 0.2)
+
+        # ROS Message
+        self.gamepad_msg = Gamepad()
+        self.gamepad_msg.mode = "Unknown"
+
+        # Safety Checks
+        if not ValidGamepadType(self.GAMEPAD_TYPE):
+            rospy.logfatal('%s is not a valid gamepad type. Valid gamepad types are %s'%(self.GAMEPAD_TYPE, ValidGamepadTypes()))
+            rospy.signal_shutdown('Invalid parameter')
+
+
+    # START
+    def Start(self):
+
+        # Subscribers
+        self.__InitSubscribers()
+
+        # Publishers
+        self.__InitPublishers()
+
+        # Log Node Start
+        rospy.loginfo('Gamepad Node Initialised')
+
+        # Spin ROS
+        rate = rospy.Rate(self.REPEAT_RATE)
+        while not rospy.is_shutdown():
+            self.gamepad_msg.header.stamp = rospy.Time.now()
+            self.gamepad_pub.publish(self.gamepad_msg)
+            rate.sleep()
+
+    # INITIALISE SUBSCRIBERS
+    def __InitSubscribers(self):
+        self.joy_sub = rospy.Subscriber('joy', Joy, self.__JoyCallback)
+
+    # INITIALISE PUBLISHERS
+    def __InitPublishers(self):
+        self.gamepad_pub = rospy.Publisher('gamepad', Gamepad, queue_size=1)
+
+    # JOY CALLBACK
+    def __JoyCallback(self, joy_msg):
+        new_mode = False
+
+        # Check to see if input mode has changed, if hasn't continue, else copy current states into new format
+        error, mode = self.__CurrentGamepadMode(joy_msg)
+        if error != 0:
+            rospy.logerr('Unknown mode for %s'%(self.GAMEPAD_TYPE.replace('_', ' ').title()))
+            return
+        if self.gamepad_msg.mode.lower() == "unknown" or self.gamepad_msg.mode.lower() != mode.lower():
+            new_mode = True
+            self.gamepad_triggers_previously_nonzero = [False, False] # reset
+            if self.gamepad_msg.mode.lower() != "unknown":
+                rospy.loginfo('Gamepad mode changed from %s to %s'%(self.gamepad_msg.mode, mode))
+        self.gamepad_msg.mode = mode
+
+        # Initialise array for button states if new mode and reset previous joy message
+        if new_mode:
+            self.previous_joy_message = Joy()
+            self.__InitButtonStatesArray(joy_msg)
+
+        # Check to see if left or right trigger has previously been touched - annoylingly seems to affect resting state
+        # self.__LeftRightTriggersTouched(joy_msg)
+
+        # # Check to see if same as last joy message, if different reset safety timer, if not publish with data as previous
+        # if new_mode:
+        #     self.time_difference = 0
+        # else:
+        #     # difference between current joy message and resting state
+        #     default_axes_diff, default_buttons_diff = self.__RestStateDifferences(joy_msg)
+        #     # rospy.loginfo("Default Axes Diff: %f, Default Buttons Diff: %f"%(default_axes_diff, default_buttons_diff))
+
+        #     # difference between current and previous joy messages
+        #     msg_axes_diff = np.array(joy_msg.axes) - np.array(self.previous_joy_message.axes)
+        #     msg_buttons_diff = np.array(joy_msg.buttons) - np.array(self.previous_joy_message.buttons)
+
+        #     # new information recieved or is gamepad in default state
+        #     if np.any(msg_axes_diff) or np.any(msg_buttons_diff) or (not np.any(default_axes_diff) and not np.any(default_buttons_diff)):
+        #         # difference between current and previous message, or in resting state - so assume remote still connected
+        #         self.time_difference = 0
+        #         if np.any(msg_axes_diff) or np.any(msg_buttons_diff):
+        #             rospy.loginfo('Difference between current and previous message')
+        #         if not np.any(default_axes_diff) and not np.any(default_buttons_diff):
+        #             rospy.loginfo('In rest state')
+        #     else:
+        #         # assume remote has disconnected - add time
+        #         self.time_difference += (joy_msg.header.stamp - self.previous_joy_message.header.stamp).to_sec()
+        
+        # # rospy.loginfo(self.time_difference)
+        # if self.time_difference >= self.SAFETY_TIMER:
+        #     rospy.logwarn('Joy message has not changed in %f seconds.'%(self.time_difference))
+
+        # Convert Joy Message into Gamepad standard
+        self.gamepad_msg.axes, gamepad_buttons_data = self.__ConvertFromJoyToGamepad(joy_msg)
+
+        # Update current button states (up, pressed, down or released)
+        self.__UpdateButtonStates(gamepad_buttons_data)
+
+        # Copy timestamp from joy message
+        # self.gamepad_msg.header.stamp = joy_msg.header.stamp
+
+        # Update previous joy message
+        self.previous_joy_message = joy_msg
+
+
+    # DETERMINE MODE CHANGE
+    def __CurrentGamepadMode(self, joy_msg):
+        if self.GAMEPAD_TYPE.lower() == 'logitech_f710_wireless':
+            if len(joy_msg.axes) == 6: # DirectInput Mode
+                return 0, "DirectInput"
+            elif len(joy_msg.axes) == 8: # XInput Mode
+                return 0, "XInput"
+            else:
+                return -1, "Unknown"
+
+
+    # DETERMINE LEFT AND RIGHT TRIGGERS
+    # def __LeftRightTriggersTouched(self, joy_msg):
+    #     if self.GAMEPAD_TYPE.lower() == 'logitech_f710_wireless':
+    #         if len(joy_msg.axes) == 8: # XInput Mode - doesn't matter for DirectInput mode has triggers become buttons not axes
+    #             if joy_msg.axes[LOGITECH_F710_WIRELESS_X_INPUT_AXES["LT"]] != 0 or self.gamepad_triggers_previously_nonzero[0] == True:
+    #                 self.gamepad_triggers_previously_nonzero[0] = True
+    #             if joy_msg.axes[LOGITECH_F710_WIRELESS_X_INPUT_AXES["RT"]] != 0 or self.gamepad_triggers_previously_nonzero[0] == True:
+    #                 self.gamepad_triggers_previously_nonzero[1] = True
+
+
+    # REST STATE DIFFERENCES
+    # def __RestStateDifferences(self, joy_msg):
+    #     if self.GAMEPAD_TYPE.lower() == 'logitech_f710_wireless':
+    #         if len(joy_msg.axes) == 6: # DirectInput Mode - all axis and button values are 0
+    #             axes_rest_state = np.zeros((6))
+    #             buttons_rest_state = np.zeros((12))
+                
+    #         elif len(joy_msg.axes) == 8: # XInput Mode - all button values are 0, except if left and right trigger have previously been touched
+    #             axes_rest_state = np.zeros((8))
+    #             buttons_rest_state = np.zeros((11))
+
+    #             # axes rest state dependent on if left/right trigger have previously been touched
+    #             if self.gamepad_triggers_previously_nonzero[0] == True:
+    #                 axes_rest_state[LOGITECH_F710_WIRELESS_X_INPUT_AXES["LT"]] = 1
+    #             if self.gamepad_triggers_previously_nonzero[1] == True:
+    #                 axes_rest_state[LOGITECH_F710_WIRELESS_X_INPUT_AXES["RT"]] = 1
+
+    #     axes_diff = np.array(joy_msg.axes) - axes_rest_state
+    #     buttons_diff = np.array(joy_msg.buttons) - buttons_rest_state
+
+    #     return axes_diff, buttons_diff
+
+
+    # INITIALISE BUTTON STATES ARRAY
+    def __InitButtonStatesArray(self, joy_msg):
+        if self.GAMEPAD_TYPE.lower() == 'logitech_f710_wireless':
+            if self.gamepad_msg.mode.lower() == "directinput":
+                self.gamepad_msg.button_states = [0] * len(GAMEPAD_LOGITECH_F710_WIRELESS_DIRECT_INPUT_BUTTONS)
+            if self.gamepad_msg.mode.lower() == "xinput":
+                self.gamepad_msg.button_states = [0] * len(GAMEPAD_LOGITECH_F710_WIRELESS_X_INPUT_BUTTONS)
+
+
+    # DETERMINE BUTTON STATES
+    def __UpdateButtonStates(self, gamepad_buttons_data):
+        # Difference between current buttons data and previous data
+        if len(self.previous_joy_message.axes) != 0: # first iteration
+            _, previous_buttons_data = self.__ConvertFromJoyToGamepad(self.previous_joy_message)
+        else:
+            previous_buttons_data = np.zeros_like(gamepad_buttons_data)
+        diff = gamepad_buttons_data - previous_buttons_data
+
+        for idx, val in enumerate(diff):
+            # add one to button state if value is nonzero or if currently in pressed or released state
+            if val != 0 or (self.gamepad_msg.button_states[idx] == BUTTON_STATES['PRESSED'] or self.gamepad_msg.button_states[idx] == BUTTON_STATES['RELEASED']):
+                self.gamepad_msg.button_states[idx] += 1
+            
+            # sometimes gets stuck in DOWN state if button is tapped quickly
+            if self.gamepad_msg.button_states[idx] == BUTTON_STATES['DOWN'] and gamepad_buttons_data[idx] == 0:
+                self.gamepad_msg.button_states[idx] += 1
+
+            # modulus to cycle through button states
+            self.gamepad_msg.button_states[idx] = self.gamepad_msg.button_states[idx] % len(BUTTON_STATES)
+
+
+    # CONVERT FROM JOY STANDARD TO GAMEPAD STANDARD
+    def __ConvertFromJoyToGamepad(self, joy_msg):
+        if self.GAMEPAD_TYPE.lower() == 'logitech_f710_wireless':
+            joy_axes = np.array(joy_msg.axes, dtype=np.float32)
+            joy_buttons = np.array(joy_msg.buttons, dtype=np.int32)
+            if self.gamepad_msg.mode.lower() == "directinput":
+                joy_axes_dict = JOY_LOGITECH_F710_WIRELESS_DIRECT_INPUT_AXES
+                gamepad_btns_dict = GAMEPAD_LOGITECH_F710_WIRELESS_DIRECT_INPUT_BUTTONS
+
+            if self.gamepad_msg.mode.lower() == "xinput":
+                joy_axes_dict = JOY_LOGITECH_F710_WIRELESS_X_INPUT_AXES
+                gamepad_btns_dict = GAMEPAD_LOGITECH_F710_WIRELESS_X_INPUT_BUTTONS
+            
+            # copy axes up to DPAD_HOR
+            axes = joy_axes[0:joy_axes_dict["DPAD_HOR"]].copy()
+
+            # create zero array for buttons and copy up to DPAD_LEFT from buttons_joy
+            buttons = np.zeros((len(gamepad_btns_dict)), dtype=np.uint8)
+            buttons[0:gamepad_btns_dict["DPAD_LEFT"]] = joy_buttons.copy()
+
+            # determine DPAD left, right, up and down button value (0 or 1)
+            buttons[gamepad_btns_dict["DPAD_LEFT"]] = joy_axes[joy_axes_dict["DPAD_HOR"]] == 1
+            buttons[gamepad_btns_dict["DPAD_RIGHT"]] = joy_axes[joy_axes_dict["DPAD_HOR"]] == -1
+            buttons[gamepad_btns_dict["DPAD_UP"]] = joy_axes[joy_axes_dict["DPAD_VERT"]] == 1
+            buttons[gamepad_btns_dict["DPAD_DOWN"]] = joy_axes[joy_axes_dict["DPAD_VERT"]] == -1
+
+        return axes, buttons
+        
+
+
+
+### MAIN ###
+if __name__ == "__main__":
+    gamepad_node = GamepadNode()
+
+    try:
+        gamepad_node.Start()
+    except rospy.ROSInterruptException as e:
+        pass
+
+
+
+

@@ -1,0 +1,7 @@
+<launch>
+
+    <node pkg="gamepad" type="gamepad_node" name="gamepad_node" output="screen">
+        <param name="gamepad_type" type="string" value="logitech_f710"/>
+        <param name="repeat_rate" type="int" value="10"/>
+    </node>
+</launch>

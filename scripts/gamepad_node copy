@@ -1,0 +1,208 @@
+#!/usr/bin/env python
+
+# IMPORT CLASSES
+import rospy
+from NightRiderClass import *
+from GlobalROSClients import *
+
+# IMPORT MESSAGE TYPES
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Bool
+from geometry_msgs.msg import Twist
+from std_msgs.msg import UInt8
+from nightrider_base.msg import GamepadEvent
+
+
+
+# GAMEPAD DICTIONARIES
+BUTTON_STATES = {"UP": 0, "PRESSED": 1, "DOWN": 2, "RELEASED": 3}
+BUTTONS_DICT = {"A": 0, "B": 1, "X": 2, "Y": 3, "LB": 4, "RB": 5, "BACK": 6, "START": 7, "POWER": 8, "LSB": 9, "RSB": 10}
+DPAD_DICT = {"DPAD_L": 0, "DPAD_R": 1, "DPAD_U": 2, "DPAD_D": 3}
+AXES_DICT = {"LSH": 0, "LSV": 1, "LT": 2, "RSH": 3, "RSV": 4, "RT": 5, "DPADH": 6, "DPADV": 7}
+
+
+# GAMEPAD EVENT CALLBACKS
+def GamepadEvent_Callback(eventType, controlName, value):
+	# set message
+	gamepadEventMsg = GamepadEvent()
+	gamepadEventMsg.controlName = controlName
+	gamepadEventMsg.value = value
+
+	# switch to correct publisher based on event type
+	if eventType == "BUTTON_PRESSED":
+		buttonPressedEventPublisher.publish(gamepadEventMsg)
+	elif eventType == "BUTTON_DOWN":
+		buttonDownEventPublisher.publish(gamepadEventMsg)
+	elif eventType == "BUTTON_RELEASED":
+		buttonReleasedEventPublisher.publish(gamepadEventMsg)
+	elif eventType == "BUTTON_UP":
+		buttonUpEventPublisher.publish(gamepadEventMsg)
+	elif eventType == "AXIS_CHANGED":
+		axisValueChangedEventPublisher.publish(gamepadEventMsg)
+
+
+# CHECK FOR BUTTON PRESS EVENTS
+def CheckButtonEvents(data):
+	if not hasattr(CheckButtonEvents, "buttonsState"):
+		CheckButtonEvents.buttonsState = [0] * len(BUTTONS_DICT)
+
+	if not hasattr(CheckButtonEvents, "dpadState"):
+		CheckButtonEvents.dpadState = [0] * len(DPAD_DICT)
+
+	# Check for Standard Buttons
+	for button in BUTTONS_DICT:
+		eventType = None
+
+		# Progress Button States
+		if data.buttons[BUTTONS_DICT[button]] == True and CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] == BUTTON_STATES["UP"]:
+			# button is pressed (rising edge 0 -> 1)
+			CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] = BUTTON_STATES["PRESSED"]	
+			eventType = "BUTTON_PRESSED"
+		elif data.buttons[BUTTONS_DICT[button]] == True and (CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] == BUTTON_STATES["PRESSED"] or CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] == BUTTON_STATES["DOWN"]):
+			# button is held down (plateu 1)
+			CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] = BUTTON_STATES["DOWN"]
+			eventType = "BUTTON_DOWN"
+		elif data.buttons[BUTTONS_DICT[button]] == False and CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] == BUTTON_STATES["DOWN"]:
+			# button is released (falling edge 1 -> 0)
+			CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] = BUTTON_STATES["RELEASED"]
+			eventType = "BUTTON_RELEASED"
+		else:
+			# button is up
+			CheckButtonEvents.buttonsState[BUTTONS_DICT[button]] = BUTTON_STATES["UP"]
+			eventType = "BUTTON_UP"
+
+		if eventType != None:
+			GamepadEvent_Callback(eventType, button, CheckButtonEvents.buttonsState[BUTTONS_DICT[button]])
+
+	# Check for DPAD Buttons
+	for dpad in DPAD_DICT:
+		eventType = None
+
+		# Get which axis dpad belongs to and what value constitutes a press
+		if dpad == "DPAD_L":
+			axis = "DPADH"
+			pressVal = 1.0
+		elif dpad == "DPAD_R":
+			axis = "DPADH"
+			pressVal = -1.0
+		elif dpad == "DPAD_U":
+			axis = "DPADV"
+			pressVal = 1.0
+		elif dpad == "DPAD_D":
+			axis = "DPADV"
+			pressVal = -1.0
+
+		# Progress DPAD States
+		if data.axes[AXES_DICT[axis]] == pressVal and CheckButtonEvents.dpadState[DPAD_DICT[dpad]] == BUTTON_STATES["UP"]:
+			CheckButtonEvents.dpadState[DPAD_DICT[dpad]] = BUTTON_STATES["PRESSED"]
+			eventType = "BUTTON_PRESSED"
+		elif data.axes[AXES_DICT[axis]] == pressVal and (CheckButtonEvents.dpadState[DPAD_DICT[dpad]] == BUTTON_STATES["PRESSED"] or CheckButtonEvents.dpadState[DPAD_DICT[dpad]] == BUTTON_STATES["DOWN"]):
+			CheckButtonEvents.dpadState[DPAD_DICT[dpad]] = BUTTON_STATES["DOWN"]
+			eventType = "BUTTON_DOWN"				
+		elif data.axes[AXES_DICT[axis]] != pressVal and CheckButtonEvents.dpadState[DPAD_DICT[dpad]] == BUTTON_STATES["DOWN"]:
+			CheckButtonEvents.dpadState[DPAD_DICT[dpad]] = BUTTON_STATES["RELEASED"]
+			eventType = "BUTTON_RELEASED"	
+		else:
+			CheckButtonEvents.dpadState[DPAD_DICT[dpad]] = BUTTON_STATES["UP"]
+			eventType = "BUTTON_UP"
+
+		if eventType != None:
+			GamepadEvent_Callback(eventType, dpad, CheckButtonEvents.dpadState[DPAD_DICT[dpad]])
+
+
+# CHECK FOR AXIS VALUE CHANGE EVENTS
+def CheckAxisEvents(data):
+	if not hasattr(CheckAxisEvents, "axisValue"):
+		CheckAxisEvents.axisValue = [0] * len(AXES_DICT)
+		# give them correct starting value
+		for axis in AXES_DICT:
+			CheckAxisEvents.axisValue[AXES_DICT[axis]] = data.axes[AXES_DICT[axis]]
+
+	for axis in AXES_DICT:
+		if CheckAxisEvents.axisValue[AXES_DICT[axis]] != data.axes[AXES_DICT[axis]]:
+			CheckAxisEvents.axisValue[AXES_DICT[axis]] = data.axes[AXES_DICT[axis]]
+			GamepadEvent_Callback("AXIS_CHANGED", axis, CheckAxisEvents.axisValue[AXES_DICT[axis]])
+
+
+# PUBLISH ESTOP COMMANDS
+def PublishEStopState(data):
+	# EStop Engaged
+	estopMsg = Bool()
+	estopMsg.data = data.buttons[BUTTONS_DICT["RB"]]
+	estopPublisher.publish(estopMsg)
+
+
+# PUBLISH TELEOP COMMANDS
+def PublishVelCommands(data):
+	# Speed and Steering Commands
+	twistMsg = Twist()
+	twistMsg.linear.x = data.axes[1]
+	twistMsg.angular.z = -1*data.axes[3]
+	cmdPublisher.publish(twistMsg)
+
+
+# GAMEPAD SUBCRIBER CALLBACK
+def GamepadData_Callback(data):
+	global currentMode
+
+	# Check the state of the buttons, and execute event if required
+	CheckButtonEvents(data)
+
+	# Check the state of axis, and execute if required
+	CheckAxisEvents(data)
+
+	# Publish EStop State
+	PublishEStopState(data)
+
+	# If in teleopMode publish steering and speed commands
+	if currentMode == NightRiderModes.TELEOPERATION:
+		PublishVelCommands(data)
+		# print "Teleoperation Mode Active"
+
+
+# OPERATION MODE CALLBACK
+def OperationMode_Callback(data):
+	global currentMode
+	currentMode = data.data
+
+
+# MAIN FUNCTION
+def Start():
+	global buttonPressedEventPublisher
+	global buttonDownEventPublisher
+	global buttonReleasedEventPublisher
+	global buttonUpEventPublisher
+	global axisValueChangedEventPublisher
+	global estopPublisher
+	global cmdPublisher
+	global currentMode
+
+	# ROS NODE INIT - get current operation mode
+	rospy.init_node('gamepadEvents_node')
+	currentMode = GetNightRiderOperationMode_Client()
+
+	# ROS PUBLISHERS
+	buttonPressedEventPublisher = rospy.Publisher('/gamepadEvent/buttonPressed', GamepadEvent, queue_size=10)
+	buttonDownEventPublisher = rospy.Publisher('/gamepadEvent/buttonDown', GamepadEvent, queue_size=10)
+	buttonReleasedEventPublisher = rospy.Publisher('/gamepadEvent/buttonReleased', GamepadEvent, queue_size=10)
+	buttonUpEventPublisher = rospy.Publisher('/gamepadEvent/buttonUp', GamepadEvent, queue_size=10)
+	axisValueChangedEventPublisher = rospy.Publisher('/gamepadEvent/axisChanged', GamepadEvent, queue_size=10)
+	estopPublisher = rospy.Publisher('/nightRiderState/estop', Bool, queue_size=10)
+	cmdPublisher = rospy.Publisher('/nightRiderState/cmd_vel', Twist, queue_size=10)
+
+	# ROS SUBSCRIBERS
+	rospy.Subscriber("joy", Joy, GamepadData_Callback)
+	rospy.Subscriber("/nightRiderState/operationMode", UInt8, OperationMode_Callback)
+
+	# ROS SPIN
+	rospy.spin()
+
+
+if __name__ == '__main__':
+	try:
+		Start()
+	except rospy.ROSInterruptException:
+		pass
+
+
+
