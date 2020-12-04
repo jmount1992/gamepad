@@ -1,1 +1,1 @@
-import gamepad_dictionaries
+import gamepad

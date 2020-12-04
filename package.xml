@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>gamepad</name>
-  <version>0.0.0</version>
-  <description>The gamepad package</description>
+  <version>0.1.0</version>
+  <description>A package that extends the Joy package by adding additional information in the publisher including controller type, current controller mode and button event state.</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->

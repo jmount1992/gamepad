@@ -1,0 +1,17 @@
+<launch>
+
+    <!-- LAUNCH JOY NODE -->
+    <node respawn="true" pkg="joy" type="joy_node" name="joy_node" output="screen">
+        <param name="dev" type="string" value="/dev/input/js0" />
+        <param name="autorepeat_rate" value="10" />
+        <param name="coalesce_interval" value="0.05" />
+        <param name="deadzone" value="0.12" />
+    </node>
+
+    <!-- LAUNCH GAMEPAD NODE -->
+    <node pkg="gamepad" type="gamepad_node" name="gamepad_node" output="screen">
+        <param name="gamepad_type" type="string" value="logitech_f710_wireless"/>
+        <param name="repeat_rate" type="int" value="10"/>
+    </node>
+    
+</launch>
